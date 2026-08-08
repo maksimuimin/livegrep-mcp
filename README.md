@@ -29,6 +29,9 @@ A minimal FastMCP server for the LiveGrep search API using the FastMCP protocol 
    cp .env.example .env
    ```
    Edit `.env` and set the `LIVEGREP_API_URL` to your LiveGrep server.
+   If your LiveGrep instance requires authentication, set `LIVEGREP_COOKIE`
+   to the cookie header value to send with each request
+   (e.g. `session=abc123; other=value`).
 
 ## Usage
 
@@ -44,6 +47,31 @@ This starts a FastMCP server that an LLM client can connect to for performing co
 ```bash
 # Development
 fastmcp dev src/livegrepMCP.py
+```
+
+### Running with uv
+
+The script carries inline metadata (PEP 723), so `uv` resolves the dependencies
+automatically — no `--with` flags needed:
+
+```bash
+uv run src/livegrepMCP.py
+```
+
+Example MCP client configuration:
+
+```json
+"livegrep": {
+    "command": "uv",
+    "args": [
+        "run",
+        "https://raw.githubusercontent.com/mtib/livegrep-mcp/main/src/livegrepMCP.py"
+    ],
+    "env": {
+        "LIVEGREP_API_URL": "https://your.livegrep.com/",
+        "LIVEGREP_COOKIE": "session=abc123"
+    }
+}
 ```
 
 ## Available Tools and Resources

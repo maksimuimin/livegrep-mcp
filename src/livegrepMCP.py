@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "fastmcp>=2.0.0",
+#     "httpx>=0.26.0",
+#     "python-dotenv>=1.0.0",
+# ]
+# ///
 """
 LiveGrepMCP - A minimal FastMCP client for LiveGrep search API
 """
@@ -20,6 +28,9 @@ if not LIVEGREP_API_URL:
     sys.exit(1)
 
 LIVEGREP_API_URL = LIVEGREP_API_URL.rstrip("/")
+
+# Optional cookie for authenticated LiveGrep instances
+LIVEGREP_COOKIE = os.getenv("LIVEGREP_COOKIE")
 
 # Initialize FastMCP server
 mcp = FastMCP(name="LiveGrepMCP 🔍")
@@ -50,7 +61,7 @@ def search_livegrep(
     Returns:
     - dict: API response with search results
     """
-    endpoint = f"{LIVEGREP_API_URL}/api/v1/search/"
+    endpoint = f"{LIVEGREP_API_URL}/api/v2/search"
 
     # If max_matches is provided, add it to the query string
     if max_matches is not None:
@@ -67,12 +78,16 @@ def search_livegrep(
     # URL encode the payload
     payload_str = urllib.parse.urlencode(payload)
 
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if LIVEGREP_COOKIE:
+        headers["Cookie"] = LIVEGREP_COOKIE
+
     try:
         with httpx.Client() as client:
             response = client.post(
                 endpoint,
                 data=payload_str,
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
+                headers=headers
             )
             response.raise_for_status()
             return response.json()
@@ -106,9 +121,10 @@ def get_api_info() -> Dict[str, Any]:
     """
     return {
         "api_url": LIVEGREP_API_URL,
-        "endpoint": f"{LIVEGREP_API_URL}/v1/search/",
+        "endpoint": f"{LIVEGREP_API_URL}/api/v2/search",
         "method": "POST",
-        "content_type": "application/x-www-form-urlencoded"
+        "content_type": "application/x-www-form-urlencoded",
+        "cookie_auth": bool(LIVEGREP_COOKIE)
     }
 
 
