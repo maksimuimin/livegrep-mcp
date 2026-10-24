@@ -10,6 +10,7 @@ A minimal FastMCP server for the LiveGrep search API using the FastMCP protocol 
 - Case sensitivity controls
 - Easily integrates with LLM models and other MCP clients
 - Available as both a Python tool and a REST resource
+- Signs in through a browser window when the instance needs it (SSO), and keeps the session across restarts
 
 ## Setup
 
@@ -29,9 +30,8 @@ A minimal FastMCP server for the LiveGrep search API using the FastMCP protocol 
    cp .env.example .env
    ```
    Edit `.env` and set the `LIVEGREP_API_URL` to your LiveGrep server.
-   If your LiveGrep instance requires authentication, set `LIVEGREP_COOKIE`
-   to the cookie header value to send with each request
-   (e.g. `session=abc123; other=value`).
+   If your LiveGrep instance requires authentication, there is nothing to
+   paste: see [Authentication](#authentication).
 
 ## Usage
 
@@ -68,11 +68,71 @@ Example MCP client configuration:
         "https://raw.githubusercontent.com/mtib/livegrep-mcp/main/src/livegrepMCP.py"
     ],
     "env": {
-        "LIVEGREP_API_URL": "https://your.livegrep.com/",
-        "LIVEGREP_COOKIE": "session=abc123"
+        "LIVEGREP_API_URL": "https://your.livegrep.com/"
     }
 }
 ```
+
+## Authentication
+
+Instances behind an SSO (like `https://cs.vk.team`, which sends the browser to
+`auth.vk.team` and answers the API with `401 {}` without a session) need the
+browser's session cookies.
+
+### Browser sign-in (default)
+
+Nothing to paste. When a search finds no session, or the session expired, the
+server opens a dedicated Chrome window at `LIVEGREP_API_URL`. Sign in there; the
+server then takes the cookies the browser would send to the API (for cs.vk.team:
+`jwt_token`, `refresh_token`), checks that the API accepts them, closes the
+window and deletes its throwaway profile. Nothing else from the browser is kept.
+Its steps are logged to stderr (`livegrep-mcp: sign-in: …`, never values), which
+Claude Desktop shows in `~/Library/Logs/Claude/mcp-server-<name>.log`.
+
+The search that triggered it waits up to ~40 s and carries on (Claude Desktop
+allows local servers 60 s per call); if signing in takes longer, it returns an
+error asking to retry, and the `login` tool waits for the sign-in in progress,
+≤45 s per call. Closing the window cancels the sign-in (searches then don't
+reopen it for 2 minutes; `login` does). There is one window at a time:
+`login force=true` signs in anew even when the session works, and joins a window
+that is already open. If the API fails (5xx) while checking the browser's
+cookies, the waiting messages say so and the check is retried. Several MCP
+processes with the same configuration share one session: when one signs in, the
+others pick it up once the API accepts it. Chrome is driven over a pipe, not a
+DevTools port, and exits with the server; on macOS and Linux a profile left by a
+killed server is removed when the next one starts.
+
+The server keeps the cookies in a private state file
+(`~/.livegrep-mcp/session-<scheme>-<host>-<hash>.json`, mode 0600) and follows
+any `Set-Cookie` the API answers a successful request with, so restarts resume
+the session without a browser. The session lasts as long as the instance lets
+it; when the API rejects it, the window opens again.
+
+Chrome is found in its standard location; set `LIVEGREP_CHROME` to use another
+Chromium-based browser (Edge, Brave, Yandex, …). Playwright drives it, and the
+installed browser is used: no browser download. `LIVEGREP_AUTO_LOGIN=0` stops
+searches from opening the window on their own (the `login` tool still does).
+Instances that need no sign-in never open a window.
+
+### Pasted cookie (fallback)
+
+On a machine without a browser (the Docker image has none): sign in to LiveGrep
+in a private window, copy its cookies for the site from DevTools →
+**Application → Cookies** (for cs.vk.team: `jwt_token` and `refresh_token`), set
+`LIVEGREP_COOKIE` to `name=value; name2=value2`, close the private window and
+restart the MCP client. A new `LIVEGREP_COOKIE` value starts a new session; when
+it is rejected, the browser sign-in takes over where there is a browser.
+
+Treat the values as passwords: they are your session. Tool output never echoes
+them.
+
+| env var | meaning |
+|---|---|
+| `LIVEGREP_API_URL` | base URL of the LiveGrep instance; `https://` for the browser sign-in |
+| `LIVEGREP_COOKIE` | optional: `name=value; …` from a private-window session instead of the browser sign-in |
+| `LIVEGREP_STATE_DIR` | where the session is kept, default `~/.livegrep-mcp` |
+| `LIVEGREP_CHROME` | browser for the sign-in window, default: the installed Google Chrome |
+| `LIVEGREP_AUTO_LOGIN` | `0` to keep searches from opening the sign-in window by themselves |
 
 ## Available Tools and Resources
 
@@ -87,11 +147,17 @@ The LiveGrepMCP server exposes:
      - `context` (str): Include context in results - "true" or "false"
      - `max_matches` (int, optional): Limit the number of matches returned
 
-2. **Resource: `livegrep://search-help`**
+2. **Tool: `login`**
+   - Signs in through a browser window, or waits for the sign-in in progress
+   - Parameters:
+     - `wait_s` (int): How long to wait for the user, 5–45 s (default 40)
+     - `force` (bool): Sign in again even if the current session works
+
+3. **Resource: `livegrep://search-help`**
    - Provides help information about the LiveGrep search syntax
 
-3. **Resource: `livegrep://api-info`**
-   - Provides information about the configured LiveGrep API endpoint
+4. **Resource: `livegrep://api-info`**
+   - Provides information about the configured LiveGrep API endpoint and session
 
 ## Search Query Syntax
 
@@ -116,7 +182,9 @@ docker build -t livegrep-mcp .
 docker run -e LIVEGREP_API_URL=https://your.livegrep.com/ -it livegrep-mcp
 ```
 
-This will run the LiveGrepMCP server
+This will run the LiveGrepMCP server. The image has no browser: for an
+instance behind a sign-in, pass `LIVEGREP_COOKIE` (see
+[Pasted cookie](#pasted-cookie-fallback)).
 
 Add it to your MCP client like this:
 
@@ -129,10 +197,22 @@ Add it to your MCP client like this:
         "--rm",
         "-e",
         "LIVEGREP_API_URL",
+        "-e",
+        "LIVEGREP_COOKIE",
         "livegrep-mcp",
     ],
     "env": {
         "LIVEGREP_API_URL": "https://your.livegrep.com/",
+        "LIVEGREP_COOKIE": "name=value; name2=value2",
     }
 },
+```
+
+## Tests
+
+End-to-end tests run the server over stdio against a mock LiveGrep behind a mock
+SSO, signing in through a headless Chrome:
+
+```bash
+uv run --with-requirements requirements.txt --with pytest pytest tests/
 ```
